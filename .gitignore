@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+.env
+.issuer_key
+deployment.json
+chain/artifacts/
+chain/cache/
+chain/types/
+*.log

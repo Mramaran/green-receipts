@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Methodology · Green Receipts</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <div>
+      <h1>Methodology</h1>
+      <p class="tag">How a receipt's number is produced, how wide it is, and what it does not claim</p>
+    </div>
+    <nav><a href="/">← Back to the dashboard</a></nav>
+  </div>
+</header>
+
+<main class="wrap prose">
+  <p id="load-error" class="error" role="alert" hidden></p>
+
+  <section class="card" aria-labelledby="m-calc">
+    <h2 id="m-calc">How the number is calculated</h2>
+    <p class="hint">Method <code id="method-id"></code> using <code id="estimator"></code>.</p>
+    <p><code id="formula"></code></p>
+    <ul class="plain">
+      <li><strong>Energy</strong> is a min–max range from the open-source estimator, based on the model's output tokens and request latency. It is estimated, not metered.</li>
+      <li><strong>Grid intensity</strong> is the hourly value for the region the caller declares, in gCO₂e per kWh.</li>
+      <li><strong>Embodied emissions</strong> (making the hardware) come from the estimator and are added once per request.</li>
+    </ul>
+  </section>
+
+  <section class="card" aria-labelledby="m-range">
+    <h2 id="m-range">How wide the error range is</h2>
+    <p>The lower bound uses the lowest energy estimate and the intensity reduced by <span id="unc-low"></span>%. The upper bound uses the highest energy estimate and the intensity raised by <span id="unc-high"></span>%. Embodied emissions are added to both.</p>
+    <p class="note" id="accuracy"></p>
+    <p>The grid-intensity uncertainty is an assumption, not a measured error. The range reflects the spread the estimator reports and that assumption, nothing more.</p>
+  </section>
+
+  <section class="card" aria-labelledby="m-limits">
+    <h2 id="m-limits">What this does not claim</h2>
+    <ul class="plain" id="limits"></ul>
+  </section>
+
+  <section class="card" aria-labelledby="m-grid">
+    <h2 id="m-grid">Grid intensity profiles in use</h2>
+    <p class="hint" id="grid-note"></p>
+    <table>
+      <thead><tr><th>Region</th><th>Zone</th><th>Low</th><th>High</th><th>24 hours (UTC)</th></tr></thead>
+      <tbody id="grid-rows"></tbody>
+    </table>
+  </section>
+
+  <section class="card" aria-labelledby="m-verify">
+    <h2 id="m-verify">Verifying a receipt yourself</h2>
+    <ol>
+      <li>Render the receipt as canonical JSON: keys sorted, no whitespace, ASCII only, numbers as plain decimals with no exponent and no trailing zeros.</li>
+      <li>Hash it with keccak256.</li>
+      <li>Recover the signer from the signature over that hash (Ethereum signed-message format).</li>
+      <li>Ask the contract for the record of that hash. It must exist, its recorded issuer must be the signer, and its recorded organisation and emissions range must match the receipt. Any edited field produces a different hash, so an edited receipt is not found.</li>
+    </ol>
+    <p class="hint">The server runs the same checks at <code>POST /v1/verify</code>. <code>scripts/verify_standalone.py</code> runs them without our server, directly against a node, using only the downloaded receipt file.</p>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+function el(tag, attrs, ...kids) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs || {})) node.setAttribute(key, value);
+  for (const kid of kids) node.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return node;
+}
+
+function sparkline(values) {
+  const ns = "http://www.w3.org/2000/svg";
+  const w = 168, h = 34;
+  const max = Math.max(...values), min = Math.min(...values);
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 " + w + " " + h);
+  svg.setAttribute("width", w);
+  svg.setAttribute("height", h);
+  svg.setAttribute("class", "spark");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Hourly intensity from " + min + " to " + max + " gCO2e per kWh");
+  const points = values.map((v, i) => {
+    const x = (i / (values.length - 1)) * (w - 4) + 2;
+    const y = max === min ? h / 2 : h - 3 - ((v - min) / (max - min)) * (h - 6);
+    return x.toFixed(1) + "," + y.toFixed(1);
+  }).join(" ");
+  const line = document.createElementNS(ns, "polyline");
+  line.setAttribute("points", points);
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "var(--accent)");
+  line.setAttribute("stroke-width", "2");
+  svg.append(line);
+  return svg;
+}
+
+async function load() {
+  const res = await fetch("/v1/methodology");
+  if (!res.ok) throw new Error("Could not load the methodology (" + res.status + ").");
+  const m = await res.json();
+  $("method-id").textContent = m.method_id;
+  $("estimator").textContent = m.estimator;
+  $("formula").textContent = m.formula;
+  $("unc-low").textContent = m.intensity_uncertainty_pct;
+  $("unc-high").textContent = m.intensity_uncertainty_pct;
+  $("accuracy").textContent = m.accuracy_statement;
+  $("limits").replaceChildren(...m.limits.map((text) => el("li", {}, text)));
+  $("grid-note").textContent = m.grid.note + " Source id: " + m.grid.source + ". Unit: " + m.grid.unit + ".";
+  $("grid-rows").replaceChildren(...Object.entries(m.grid.regions).map(([name, r]) =>
+    el("tr", {},
+      el("td", {}, name),
+      el("td", {}, r.zone),
+      el("td", {}, Math.min(...r.hourly_utc)),
+      el("td", {}, Math.max(...r.hourly_utc)),
+      (() => { const td = el("td"); td.append(sparkline(r.hourly_utc)); return td; })())));
+}
+
+load().catch((e) => { const n = $("load-error"); n.textContent = e.message; n.hidden = false; });
+</script>
+</body>
+</html>

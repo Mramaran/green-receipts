@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Green Receipts</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <div>
+      <h1>Green Receipts</h1>
+      <p class="tag">A verifiable carbon receipt for every AI request</p>
+    </div>
+    <nav>
+      <span id="chain-chip" class="chip" role="status">Checking chain…</span>
+      <a href="/methodology">Methodology</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <section aria-labelledby="h-send">
+    <div class="send-grid">
+      <div>
+        <h2 id="h-send">Send a request</h2>
+        <p class="hint">The answer comes from a mock model. The receipt is real: estimated, signed and recorded on a local test chain.</p>
+        <form id="chat-form">
+          <div class="row">
+            <label for="org">Organisation
+              <input id="org" value="acme-demo" maxlength="64" required>
+            </label>
+            <label for="region">Declared region
+              <select id="region"></select>
+            </label>
+          </div>
+          <label for="prompt">Prompt
+            <textarea id="prompt" rows="4" maxlength="4000" required>Explain carbon markets in two sentences.</textarea>
+          </label>
+          <div class="actions"><button type="submit" id="send">Send request</button></div>
+        </form>
+        <p id="send-error" class="error" role="alert" hidden></p>
+      </div>
+      <div class="slip-wrap">
+        <div id="receipt-out" class="slip" aria-live="polite"></div>
+        <div id="stamp" class="stamp" aria-hidden="true" hidden></div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-verify">
+    <h2 id="h-verify">Verify it, then try to cheat</h2>
+    <p class="hint">Verification checks that the signer is the account the chain recorded this receipt from, that this exact receipt is recorded, and that the recorded range matches. Edit any field, or press the tamper button, and verify again.</p>
+    <div class="verify-grid">
+      <div>
+        <label for="receipt-json">Receipt (editable)
+          <textarea id="receipt-json" class="mono" rows="12" spellcheck="false" placeholder="Send a request first. The receipt appears here."></textarea>
+        </label>
+        <label for="signature">Signature
+          <input id="signature" class="mono" spellcheck="false">
+        </label>
+        <div class="actions">
+          <button type="button" id="verify" disabled>Verify</button>
+          <button type="button" id="tamper" class="ghost" disabled>Tamper: cut emissions 10×</button>
+          <button type="button" id="restore" class="ghost" disabled>Restore original</button>
+          <button type="button" id="download" class="ghost" disabled>Download receipt file</button>
+        </div>
+        <p class="hint">To check a receipt without our server, download the file and run <code>python scripts/verify_standalone.py</code> on it. The script reads the chain directly.</p>
+        <p id="tamper-note" class="note" hidden></p>
+        <p id="verify-error" class="error" role="alert" hidden></p>
+      </div>
+      <div id="verify-out" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-compare">
+    <h2 id="h-compare">Same prompt, different regions</h2>
+    <p class="hint">Sends the prompt above once per region under the organisation “compare-demo”. Each one is a real receipt on the chain.</p>
+    <div class="actions"><button type="button" id="compare">Compare all regions</button></div>
+    <p id="compare-error" class="error" role="alert" hidden></p>
+    <div id="compare-out" class="result" aria-live="polite"></div>
+  </section>
+
+  <section aria-labelledby="h-ledger">
+    <h2 id="h-ledger">Organisation ledger</h2>
+    <p class="hint">Running total read from the contract, not from this page.</p>
+    <p id="ledger" class="ledger" aria-live="polite">Send a request to see the total.</p>
+    <div class="actions"><button type="button" id="refresh-ledger" class="ghost">Refresh</button></div>
+  </section>
+
+  <p class="hint">Estimates with stated ranges, not audit-grade. Grid data is illustrative, the model is a mock, and the region is declared by the caller. See the <a href="/methodology">methodology</a>.</p>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+function el(tag, attrs, ...kids) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs || {})) {
+    if (key === "class") node.className = value;
+    else node.setAttribute(key, value);
+  }
+  for (const kid of kids) node.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return node;
+}
+
+function sig3(value) { return Number(value.toPrecision(3)).toString(); }
+
+// Pick the unit from the value after rounding, so 0.9996 g reads "1 g", not "1000 mg".
+function unitFor(grams) {
+  if (grams >= 0.9995) return { name: "g", scale: 1 };
+  if (grams >= 0.9995e-3) return { name: "mg", scale: 1e3 };
+  return { name: "µg", scale: 1e6 };
+}
+
+function fmtMass(grams) {
+  const u = unitFor(grams);
+  return sig3(grams * u.scale) + " " + u.name;
+}
+
+function fmtMassRange(min, max) {
+  const u = unitFor(max);
+  return sig3(min * u.scale) + " – " + sig3(max * u.scale) + " " + u.name;
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* non-JSON error body */ }
+  if (!res.ok) {
+    let msg = "Request failed (" + res.status + ")";
+    if (data && typeof data.detail === "string") msg = data.detail;
+    else if (data && Array.isArray(data.detail)) msg = data.detail.map((d) => d.msg).join("; ");
+    throw new Error(msg);
+  }
+  return data;
+}
+
+function showError(id, message) {
+  const node = $(id);
+  node.textContent = message || "";
+  node.hidden = !message;
+}
+
+function postJSON(path, body) {
+  return api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
+// The stamp lands on the receipt slip after a verification. Passing null clears it.
+function setStamp(valid) {
+  const stamp = $("stamp");
+  if (valid === null) {
+    stamp.hidden = true;
+    stamp.className = "stamp";
+    return;
+  }
+  stamp.textContent = valid ? "VERIFIED" : "VOID";
+  stamp.className = "stamp " + (valid ? "ok" : "bad");
+  stamp.hidden = false;
+  void stamp.offsetWidth; // restart the landing animation
+  stamp.classList.add("land");
+}
+
+let original = null;
+// Bumped whenever the receipt on screen changes, so a slow verify cannot stamp a newer receipt.
+let receiptVersion = 0;
+// Only the latest ledger request may update the page.
+let ledgerRequest = 0;
+
+async function loadStatus() {
+  const chip = $("chain-chip");
+  try {
+    const status = await api("/v1/status");
+    if (status.chain.connected) {
+      chip.textContent = "Chain connected";
+      chip.className = "chip ok";
+      chip.title = status.chain.description;
+    } else {
+      chip.textContent = "Chain not connected";
+      chip.className = "chip bad";
+      chip.title = "Start a local node and run scripts/deploy_local.py";
+    }
+  } catch (e) {
+    chip.textContent = "Server error";
+    chip.className = "chip bad";
+  }
+}
+
+async function loadRegions() {
+  const data = await api("/regions");
+  const select = $("region");
+  for (const name of data.regions) select.append(el("option", { value: name }, name));
+  select.value = data.regions.includes("ap-south") ? "ap-south" : data.regions[0];
+}
+
+function fact(label, value, mono) {
+  return el("div", { class: "fact" }, el("dt", {}, label), el("dd", mono ? { class: "mono" } : {}, value));
+}
+
+function renderReceipt(body) {
+  const r = body.receipt, p = body.proof;
+  const e = r.emissions_gco2e;
+  const embodied = e.embodied_g_min === e.embodied_g_max ? fmtMass(e.embodied_g_min) : fmtMassRange(e.embodied_g_min, e.embodied_g_max);
+  const answer = body.answer.length > 120 ? body.answer.slice(0, 120) + "…" : body.answer;
+  $("receipt-out").replaceChildren(
+    el("div", { class: "big" }, fmtMassRange(e.min, e.max), " ", el("small", {}, "CO₂e, estimated range")),
+    el("dl", { class: "facts" },
+      fact("Energy", sig3(r.energy_kwh.min * 1e6) + " – " + sig3(r.energy_kwh.max * 1e6) + " mWh"),
+      fact("Grid intensity", r.grid.intensity_g_per_kwh + " g/kWh at " + String(r.grid.hour_utc).padStart(2, "0") + ":00 UTC"),
+      fact("Declared region", r.region.declared),
+      fact("Intensity source", r.grid.source + " (illustrative)"),
+      fact("Embodied share", embodied),
+      fact("Model estimated as", r.request.model_reference + (r.request.is_mock ? " (mock answer)" : "")),
+    ),
+    el("dl", { class: "facts" },
+      fact("Receipt hash", p.receipt_hash, true),
+      fact("Transaction", p.tx_hash, true),
+      fact("Issuer", p.issuer, true),
+    ),
+    el("p", { class: "note" }, "Range = estimator spread × grid intensity ±" + r.method.intensity_uncertainty_pct + "%, plus embodied emissions. " + r.method.accuracy_statement),
+    el("p", { class: "answer" }, "Answer: " + answer),
+  );
+}
+
+$("chat-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("send");
+  button.disabled = true;
+  showError("send-error", "");
+  try {
+    const body = await postJSON("/v1/chat", { org: $("org").value.trim(), prompt: $("prompt").value, region: $("region").value });
+    receiptVersion++;
+    original = {
+      receipt: body.receipt,
+      signature: body.proof.signature,
+      file: { receipt: body.receipt, signature: body.proof.signature, contract: body.proof.contract, rpc_url: body.proof.rpc_url },
+    };
+    renderReceipt(body);
+    setStamp(null);
+    $("receipt-json").value = JSON.stringify(body.receipt, null, 2);
+    $("signature").value = body.proof.signature;
+    for (const id of ["verify", "tamper", "restore", "download"]) $(id).disabled = false;
+    $("verify-out").replaceChildren();
+    $("tamper-note").hidden = true;
+    showError("verify-error", "");
+    loadLedger(body.receipt.org);
+  } catch (e) {
+    showError("send-error", e.message);
+    loadStatus();
+  } finally {
+    button.disabled = false;
+  }
+});
+
+function readReceipt() {
+  try { return JSON.parse($("receipt-json").value); }
+  catch (e) { showError("verify-error", "The receipt text is not valid JSON."); return null; }
+}
+
+$("verify").addEventListener("click", async () => {
+  showError("verify-error", "");
+  const receipt = readReceipt();
+  if (!receipt) return;
+  const button = $("verify");
+  const version = receiptVersion;
+  button.disabled = true;
+  try {
+    const result = await postJSON("/v1/verify", { receipt, signature: $("signature").value.trim() });
+    if (version !== receiptVersion) return; // the receipt changed while we waited
+    $("verify-out").replaceChildren(
+      el("div", { class: "verdict " + (result.valid ? "ok" : "bad") }, result.valid ? "Verified: authentic and recorded" : "Rejected: this receipt does not check out"),
+      el("ul", { class: "checks" }, ...result.checks.map((c) =>
+        el("li", {},
+          el("span", { class: "mark " + (c.passed ? "ok" : "bad") }, c.passed ? "PASS" : "FAIL"),
+          el("span", {}, c.name.replace(/_/g, " "), el("span", { class: "detail" }, c.detail))))),
+    );
+    setStamp(result.valid);
+  } catch (e) {
+    if (version === receiptVersion) showError("verify-error", e.message);
+    loadStatus();
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("tamper").addEventListener("click", () => {
+  const receipt = readReceipt();
+  if (!receipt || !receipt.emissions_gco2e) return;
+  receiptVersion++;
+  const before = receipt.emissions_gco2e.max;
+  receipt.emissions_gco2e.max = Number((before / 10).toPrecision(6));
+  $("receipt-json").value = JSON.stringify(receipt, null, 2);
+  const note = $("tamper-note");
+  note.textContent = "Edited: emissions max changed from " + before + " to " + receipt.emissions_gco2e.max + " g. Press Verify.";
+  note.hidden = false;
+  $("verify-out").replaceChildren();
+  setStamp(null);
+});
+
+$("restore").addEventListener("click", () => {
+  if (!original) return;
+  receiptVersion++;
+  $("receipt-json").value = JSON.stringify(original.receipt, null, 2);
+  $("signature").value = original.signature;
+  $("tamper-note").hidden = true;
+  $("verify-out").replaceChildren();
+  showError("verify-error", "");
+  setStamp(null);
+});
+
+$("download").addEventListener("click", () => {
+  if (!original) return;
+  const blob = new Blob([JSON.stringify(original.file, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = el("a", { href: url, download: "receipt-" + original.receipt.receipt_id.slice(0, 8) + ".json" });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+});
+
+function renderCompare(rows) {
+  rows.sort((a, b) => a.max - b.max);
+  const top = Math.max(...rows.map((r) => r.max));
+  const cleanestMid = (rows[0].min + rows[0].max) / 2;
+  const dirtiest = rows[rows.length - 1];
+  const children = [
+    el("div", { class: "bars" }, ...rows.map((r) => {
+      const multiple = ((r.min + r.max) / 2) / cleanestMid;
+      const track = el("div", { class: "track", role: "img", "aria-label": r.region + " " + fmtMassRange(r.min, r.max) },
+        el("div", { class: "fill-high", style: "width:" + (r.max / top * 100) + "%" }),
+        el("div", { class: "fill-low", style: "width:" + (r.min / top * 100) + "%" }));
+      return el("div", { class: "barrow" },
+        el("span", {}, r.region), track,
+        el("span", { class: "num" }, fmtMassRange(r.min, r.max) + (r === rows[0] ? " · cleanest" : " · " + multiple.toFixed(1) + "×")));
+    })),
+    el("div", { class: "legend" },
+      el("span", {}, el("span", { class: "swatch", style: "background:var(--bar-low)" }), "lower bound"),
+      el("span", {}, el("span", { class: "swatch", style: "background:var(--bar-high)" }), "up to upper bound")),
+  ];
+  if (rows.length > 1) {
+    children.push(el("p", { class: "note" }, "The same prompt costs about " + (((dirtiest.min + dirtiest.max) / 2) / cleanestMid).toFixed(1) + "× more in " + dirtiest.region + " than in " + rows[0].region + ". Regions are declared, and grid values are illustrative."));
+  }
+  $("compare-out").replaceChildren(...children);
+}
+
+$("compare").addEventListener("click", async () => {
+  const button = $("compare");
+  // Fix the inputs now so every region gets the same prompt, even if the field is edited meanwhile.
+  const prompt = $("prompt").value;
+  const regions = [...$("region").options].map((o) => o.value);
+  button.disabled = true;
+  showError("compare-error", "");
+  $("compare-out").replaceChildren(el("p", { class: "hint" }, "Sending one request per region…"));
+  const rows = [];
+  try {
+    for (const region of regions) {
+      const body = await postJSON("/v1/chat", { org: "compare-demo", prompt, region });
+      rows.push({ region, min: body.receipt.emissions_gco2e.min, max: body.receipt.emissions_gco2e.max });
+    }
+  } catch (e) {
+    showError("compare-error", e.message + (rows.length ? " Showing the " + rows.length + " regions that completed." : ""));
+    loadStatus();
+  } finally {
+    button.disabled = false;
+  }
+  if (rows.length) renderCompare(rows);
+  else $("compare-out").replaceChildren();
+});
+
+async function loadLedger(orgName) {
+  const org = (orgName || $("org").value).trim();
+  if (!org) return;
+  const request = ++ledgerRequest;
+  try {
+    const t = await api("/v1/orgs/" + encodeURIComponent(org) + "/totals");
+    if (request !== ledgerRequest) return;
+    $("ledger").textContent = t.org + ": " + t.receipts + " receipt" + (t.receipts === 1 ? "" : "s") + ", total " + (t.receipts ? fmtMassRange(t.gco2e_min, t.gco2e_max) : "0") + " CO₂e (on-chain)";
+  } catch (e) {
+    if (request === ledgerRequest) $("ledger").textContent = e.message;
+  }
+}
+$("refresh-ledger").addEventListener("click", () => loadLedger());
+
+loadStatus();
+setInterval(loadStatus, 15000);
+loadRegions().catch((e) => {
+  showError("send-error", "Could not load the regions: " + e.message);
+  $("send").disabled = true;
+});
+</script>
+</body>
+</html>

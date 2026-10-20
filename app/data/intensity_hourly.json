@@ -1,0 +1,27 @@
+{
+  "source_id": "bundled-sample-v1",
+  "unit": "gCO2e/kWh",
+  "note": "Illustrative hourly profiles shaped like typical grid patterns for each region. They are NOT live measurements. Replace with a live grid-intensity feed for real use.",
+  "regions": {
+    "eu-north": {
+      "zone": "SWE",
+      "hourly_utc": [28, 28, 27, 26, 26, 27, 29, 31, 33, 34, 34, 33, 32, 31, 31, 32, 33, 35, 36, 34, 32, 30, 29, 28]
+    },
+    "eu-west": {
+      "zone": "FRA",
+      "hourly_utc": [52, 50, 49, 48, 48, 50, 54, 58, 60, 58, 55, 52, 50, 49, 50, 53, 58, 64, 68, 66, 62, 58, 55, 53]
+    },
+    "uk-south": {
+      "zone": "GBR",
+      "hourly_utc": [190, 180, 172, 168, 170, 182, 205, 235, 250, 240, 220, 205, 195, 190, 195, 210, 240, 270, 285, 270, 245, 225, 210, 198]
+    },
+    "us-east": {
+      "zone": "USA",
+      "hourly_utc": [385, 378, 372, 368, 370, 378, 392, 410, 420, 415, 405, 395, 390, 388, 392, 400, 415, 430, 435, 428, 418, 408, 398, 390]
+    },
+    "ap-south": {
+      "zone": "IND",
+      "hourly_utc": [690, 685, 680, 678, 682, 700, 720, 730, 700, 660, 630, 615, 610, 612, 625, 655, 700, 740, 755, 745, 725, 710, 700, 695]
+    }
+  }
+}
