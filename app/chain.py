@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ log = logging.getLogger("green_receipts.chain")
 ROOT = Path(__file__).resolve().parent.parent
 DEPLOYMENT_PATH = ROOT / "deployment.json"
 ARTIFACT_PATH = ROOT / "chain" / "artifacts" / "contracts" / "GreenReceipts.sol" / "GreenReceipts.json"
+# Compiled contract committed to git so a host without Node can still load the ABI.
+PACKAGED_ARTIFACT_PATH = ROOT / "chain" / "GreenReceipts.artifact.json"
 NG_PER_G = 1_000_000_000
 # Nodes report custom errors as a 4-byte selector, not by name.
 ALREADY_RECORDED_SELECTOR = "0x" + keccak(text="AlreadyRecorded(bytes32)")[:4].hex()
@@ -133,10 +136,18 @@ class InMemoryChain:
 class Web3Chain:
     """The deployed GreenReceipts contract, reached over JSON-RPC (local node)."""
 
-    def __init__(self, rpc_url: str, contract_address: str, abi: list, issuer_key: str):
-        self.rpc_url = rpc_url
+    def __init__(
+        self,
+        rpc_url: str,
+        contract_address: str,
+        abi: list,
+        issuer_key: str,
+        public_rpc_url: str | None = None,
+    ):
+        # rpc_url may carry a provider API key, so only public_rpc_url is ever shown to callers.
+        self.rpc_url = public_rpc_url or rpc_url
         self.address = to_checksum_address(contract_address)
-        self.description = f"contract {self.address} via {rpc_url}"
+        self.description = f"contract {self.address} via {self.rpc_url}"
         self._w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
         self._account = Account.from_key(issuer_key)
         self._contract = self._w3.eth.contract(address=self.address, abi=abi)
@@ -144,8 +155,14 @@ class Web3Chain:
 
     @classmethod
     def from_deployment(cls, issuer_key: str) -> "Web3Chain":
+        """Settings come from GR_RPC_URL and GR_CONTRACT_ADDRESS when set (hosted), else deployment.json."""
+        abi_path = ARTIFACT_PATH if ARTIFACT_PATH.exists() else PACKAGED_ARTIFACT_PATH
+        abi = json.loads(abi_path.read_text(encoding="utf-8"))["abi"]
+        env_rpc = os.environ.get("GR_RPC_URL")
+        env_address = os.environ.get("GR_CONTRACT_ADDRESS")
+        if env_rpc and env_address:
+            return cls(env_rpc, env_address, abi, issuer_key, os.environ.get("GR_PUBLIC_RPC_URL"))
         deployment = json.loads(DEPLOYMENT_PATH.read_text(encoding="utf-8"))
-        abi = json.loads(ARTIFACT_PATH.read_text(encoding="utf-8"))["abi"]
         return cls(deployment["rpc_url"], deployment["address"], abi, issuer_key)
 
     def is_connected(self) -> bool:

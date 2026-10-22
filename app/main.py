@@ -1,4 +1,5 @@
 import logging
+import os
 import threading
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -44,7 +45,8 @@ def _now() -> datetime:
 
 @lru_cache(maxsize=1)
 def get_issuer_key() -> str:
-    return load_or_create_issuer_key()
+    # Hosted: the key comes from the GR_ISSUER_KEY secret. Local: the .issuer_key file.
+    return os.environ.get("GR_ISSUER_KEY", "").strip() or load_or_create_issuer_key()
 
 
 def get_chain() -> ChainClient:

@@ -10,3 +10,4 @@ chain/artifacts/
 chain/cache/
 chain/types/
 *.log
+.testnet_keys.json

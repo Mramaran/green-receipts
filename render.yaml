@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: green-receipts
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: GR_RPC_URL
+        sync: false
+      - key: GR_PUBLIC_RPC_URL
+        value: https://ethereum-sepolia-rpc.publicnode.com
+      - key: GR_CONTRACT_ADDRESS
+        sync: false
+      - key: GR_ISSUER_KEY
+        sync: false

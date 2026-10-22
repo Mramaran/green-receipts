@@ -1,0 +1,13 @@
+.venv/
+.git/
+chain/node_modules/
+chain/artifacts/
+chain/cache/
+chain/types/
+.issuer_key
+.testnet_keys.json
+deployment.json
+*.log
+__pycache__/
+.pytest_cache/
+tests/
